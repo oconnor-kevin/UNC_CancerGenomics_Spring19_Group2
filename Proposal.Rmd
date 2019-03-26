@@ -1,0 +1,117 @@
+---
+title: "BD2K: Cancer Genomics Project Proposal"
+author: "Group 2"
+date: "3/11/2019"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+# Libraries
+library(dplyr)
+library(survival)
+library(circlize)
+library(ggplot2)
+
+# Directories
+homedir <- "/Users/kevinoconnor/Documents/School/CancerGenomics/Project"
+rnaseqdir <- homedir
+clindir <- file.path(homedir, "GDCdata/TARGET-AML/harmonized/Clinical/Clinical_Supplement/06f24280-5215-484b-bb12-0722cee4b7d4")
+
+# Read data.
+source(file.path(homedir, "DataLoader.R"))
+rnaseq.dat <- DataLoader(FALSE)
+## Clinical data: make sure you've saved the .xlsx file as .csv
+clin.dat <- read.csv(file.path(clindir, "TARGET_AML_ClinicalData_20160714.csv"), header=TRUE)
+```
+
+In this document, we perform a shallow study of patterns between gene expression and clinical variables for the TCGA Blood cancer dataset.
+
+# Genes of interest
+We begin by first plotting distributions of gene expression for VEGFA-D for the patients in the dataset.
+
+```{r vegf_1}
+hist(rnaseq.dat["VEGFA",], main="VEGFA Expression")
+hist(rnaseq.dat["VEGFB",], main="VEGFB Expression")
+hist(rnaseq.dat["VEGFC",], main="VEGFC Expression")
+hist(rnaseq.dat["VEGFD",], main="VEGFD Expression")
+
+vegfa.hist <- ggplot() + aes(rnaseq.dat["VEGFA",]) + geom_histogram(color="black", fill="blue") + 
+  labs(title="VEGFA Gene Expression", x="Expression", y="Count") + ylim(0, 180)
+vegfb.hist <- ggplot() + aes(rnaseq.dat["VEGFB",]) + geom_histogram(color="black", fill="blue") + 
+  labs(title="VEGFB Gene Expression", x="Expression", y="Count") + xlim(-30, 18100) + ylim(0, 180)
+vegfc.hist <- ggplot() + aes(rnaseq.dat["VEGFC",]) + geom_histogram(color="black", fill="blue") + 
+  labs(title="VEGFC Gene Expression", x="Expression", y="Count") + xlim(-20, 750) + ylim(0, 180)
+vegfd.hist <- ggplot() + aes(rnaseq.dat["VEGFD",]) + geom_histogram(color="black", fill="blue") + 
+  labs(title="VEGFD Gene Expression", x="Expression", y="Count") + xlim(-20, 760) + ylim(0, 180)
+ggsave(file.path(homedir, "vegfa_hist.png"), vegfa.hist)
+ggsave(file.path(homedir, "vegfb_hist.png"), vegfb.hist)
+ggsave(file.path(homedir, "vegfc_hist.png"), vegfc.hist)
+ggsave(file.path(homedir, "vegfd_hist.png"), vegfd.hist)
+```
+
+Note that VEGFC and VEGFD exhibit much less expression than VEGFA and VEGFB.
+
+```{r vegf_2}
+# Get short patient codes.
+short.samp.names <- sapply(colnames(rnaseq.dat), function(x){
+  substr(x, start=1, stop=16)
+})
+# Subset to patients with clinical data.
+## Note that some patients have multiple measurements. For now, we are treating
+##  them as separate samples since I am not sure of how to intelligently choose
+##  a single sample.
+rnaseq.sub <- rnaseq.dat[, na.omit(match(clin.dat[,1], factor(short.samp.names)))]
+# Get survival times for each patient.
+rnaseq.sub.short.names <- short.samp.names[match(colnames(rnaseq.sub), names(short.samp.names))]
+survival.time <- clin.dat[match(rnaseq.sub.short.names, clin.dat[,1]), 9]
+# Plot distribution of survival times.
+hist(survival.time, main="Distribution of Survival Time (Days)", xlab="Survival Time")
+# Plot Kaplan-Meier curve.
+km.curve <- survfit(Surv(survival.time) ~ 1, type="kaplan-meier")
+png(file.path(homedir, "km_curve.png"), width=1000, height=500)
+plot(km.curve, main="Kaplan-Meier Curve for AML Patients", xlab="Days", ylab="Survival")
+dev.off()
+```
+
+```{r vegf_vs_survival_1}
+plot(rnaseq.sub["VEGFA",], survival.time, main="VEGFA Expression vs. Survival Time")
+plot(rnaseq.sub["VEGFB",], survival.time, main="VEGFB Expression vs. Survival Time")
+plot(rnaseq.sub["VEGFC",], survival.time, main="VEGFC Expression vs. Survival Time")
+plot(rnaseq.sub["VEGFD",], survival.time, main="VEGFD Expression vs. Survival Time")
+```
+
+```{r vegf_3}
+# Plot scatterplot matrix with points colored by survival time.
+colors <- c("#00AFBB", "#E7B800")
+pairs(t(rnaseq.sub[c("VEGFA", "VEGFB", "VEGFC", "VEGFD"),]),
+      col=colors[1+as.numeric(survival.time < median(survival.time))],
+      lower.panel=NULL)
+par(xpd=TRUE)
+legend(0, 0.25, c("Short Survival Time", "Long Survival Time"),
+       unique(colors[1+(survival.time < median(survival.time))]))
+```
+
+```{r vegf_4}
+# Plot scatterplot matrix with points colored by gender.
+gender <- clin.dat[match(rnaseq.sub.short.names, clin.dat[,1]), 2]
+pairs(t(rnaseq.sub[c("VEGFA", "VEGFB", "VEGFC", "VEGFD"),]),
+      col=colors[ifelse(gender=="Female", 1, 2)],
+      lower.panel=NULL)
+par(xpd=TRUE)
+legend(0, 0.25, c("Female", "Male"),
+       unique(colors[ifelse(gender=="Female", 1, 2)]))
+```
+
+
+```{r vegf_5}
+# Plot scatterplot matrix with points colored by race.
+rand.colors <- rand_color(7)
+race <- clin.dat[match(rnaseq.sub.short.names, clin.dat[,1]), 3]
+pairs(t(rnaseq.sub[c("VEGFA", "VEGFB", "VEGFC", "VEGFD"),]), 
+      col=rand.colors[sapply(race, function(x){which(as.vector(unique(race)) == x)})],
+      lower.panel=NULL)
+par(xpd=TRUE)
+legend(-0.03, 0.5, as.vector(unique(race)), rand.colors)
+```

@@ -1,0 +1,88 @@
+---
+title: "Project Analyses"
+author: "Kevin O'Connor"
+date: "3/25/2019"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+# Clear console
+rm(list=ls())
+
+# Libraries
+library(tidyverse)
+library(survival)
+library(circlize)
+library(DESeq2)
+library(keras)
+
+# Directories
+homedir <- "/Users/kevinoconnor/Documents/School/CancerGenomics/Project"
+codedir <- file.path(homedir, "UNC_CancerGenomics_Spring19_Group2")
+datadir <- file.path(homedir, "Data")
+
+# Read data.
+source(file.path(codedir, "DataLoader.R"))
+data_list <- DataLoader(datadir)
+target_rnaseq <- data_list$target_rnaseq
+target_clin   <- data_list$target_clinical
+tcga_rnaseq   <- data_list$tcga_rnaseq
+tcga_clin     <- data_list$tcga_clinical
+```
+
+```{r check_qn}
+apply(tcga_rnaseq, 2, function(x) quantile(x, probs = 0.75))[1:20]
+apply(target_rnaseq, 2, function(x) quantile(x, probs = 0.75))[1:20]
+```
+
+```{r attach_clin_dat}
+# Get short patient codes.
+short.samp.names <- sapply(colnames(rnaseq.dat), function(x){
+  substr(x, start=1, stop=16)
+})
+# Subset to patients with clinical data.
+## Note that some patients have multiple measurements. For now, we are treating
+##  them as separate samples since I am not sure of how to intelligently choose
+##  a single sample.
+rnaseq.sub <- rnaseq.dat[, na.omit(match(clin.dat[,1], factor(short.samp.names)))]
+# Get survival times for each patient.
+rnaseq.sub.short.names <- short.samp.names[match(colnames(rnaseq.sub), names(short.samp.names))]
+survival.time <- clin.dat[match(rnaseq.sub.short.names, clin.dat[,1]), 9]
+```
+
+```{r neural_net_1}
+# Center and scale log-survival time.
+log.st <- log(survival.time)
+log.st.mean <- mean(log.st)
+log.st.sd <- sd(log.st)
+st.std <- (log.st - log.st.mean)/log.st.sd
+
+# Prepare train and test datasets.
+nn.df <- as.data.frame(vst(rnaseq.sub))
+train.inds <- sample(1:ncol(nn.df), round(0.8*ncol(nn.df)))
+nn.train <- nn.df[, train.inds]
+nn.test <- nn.df[, -train.inds]
+st.train <- st.std[train.inds]
+st.test <- st.std[-train.inds]
+
+# Build model.
+model <- keras_model_sequential() 
+model %>% 
+  layer_dense(units = 256, activation = "relu", input_shape = 4) %>% 
+  layer_dropout(rate = 0.4) %>% 
+  layer_dense(units = 128, activation = "relu") %>%
+  layer_dropout(rate = 0.3) %>%
+  layer_dense(units = 1, activation = "linear") %>% 
+  compile(
+  loss = "mean_squared_error",
+  optimizer = optimizer_rmsprop(),
+  metrics = c("accuracy")
+)
+
+history <- model %>% fit(
+  nn.train[c("VEGFA", "VEGFB", "VEGFC", "VEGFD"), ], st.train, 
+  epochs = 30, batch_size = 10, 
+  validation_split = 0.2
+)
+```

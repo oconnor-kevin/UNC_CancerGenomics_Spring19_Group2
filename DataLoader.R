@@ -1,35 +1,30 @@
 # TITLE: DataLoader.R
 # AUTHOR: Kevin O'Connor
 # DATE CREATED: 3/7/19
-# DATE MODIFIED: 3/12/19
+# DATE MODIFIED: 4/1/19
 
-DataLoader <- function(write.rnaseq = FALSE){
-  # Download data.
-  ## RNAseq data.
-  rna.query <- TCGAbiolinks::GDCquery(project = "TARGET-AML",
-                                      data.category = "Transcriptome Profiling",
-                                      data.type = "Gene Expression Quantification",
-                                      workflow.type = "HTSeq - Counts")
-  TCGAbiolinks::GDCdownload(rna.query, method = "api", files.per.chunk = 10)
-  ## Clinical data.
-  clinical.query <- TCGAbiolinks::GDCquery(project = "TARGET-AML", 
-                                           data.category = "Clinical")
-  TCGAbiolinks::GDCdownload(clinical.query)
+DataLoader <- function(file_dir = getwd()){
+  stringsAsFactors <- FALSE
   
+  target_rnaseq <- read.csv(file.path(file_dir, "target_laml_rnaseq_040119.csv"), header = TRUE)
+  target_rnaseq <- target_rnaseq[-which(duplicated(target_rnaseq[, 1])), ]
+  rownames(target_rnaseq) <- target_rnaseq[, 1]
+  target_rnaseq <- target_rnaseq[, -1]
   
-  # Prepare RNA Data for Analysis.
-  ## Prepares a 'Summarized Experiment' object.
-  rna.seqdat <- TCGAbiolinks::GDCprepare(query = rna.query, 
-                                         save = TRUE, 
-                                         save.filename = "rnaseq.rda")
-  ## Create a matrix of the RNA-seq data with genes as rows and samples as columns
-  full.rna.seq.mat <- SummarizedExperiment::assay(rna.seqdat)
-  rownames(full.rna.seq.mat) <- SummarizedExperiment::rowData(rna.seqdat)$external_gene_name
-  if (write.rnaseq){
-    ## Write the RNA-Seq data to a matrix
-    write.csv(full.rna.seq.mat, file = "full_rna_seq_mat.csv",
-              row.names = TRUE) 
-  }
+  target_clinical <- read.csv(file.path(file_dir, "target_laml_clinical_040119.csv"), header = TRUE)
+  rownames(target_clinical) <- target_clinical[, 1]
+  target_clinical <- target_clinical[, -1]
   
-  return(full.rna.seq.mat)
+  tcga_rnaseq <- read.csv(file.path(file_dir, "tcga_laml_rnaseq_040119.csv"), header = TRUE)
+  rownames(tcga_rnaseq) <- tcga_rnaseq[, 1]
+  tcga_rnaseq <- tcga_rnaseq[, -1]
+  
+  tcga_clinical <- read.csv(file.path(file_dir, "tcga_laml_clinical_040119.csv"), header = TRUE)
+  rownames(tcga_clinical) <- tcga_clinical[, 1]
+  tcga_clinical <- tcga_clinical[, -1]
+  
+  return(list("target_rnaseq"   = target_rnaseq, 
+              "target_clinical" = target_clinical, 
+              "tcga_rnaseq"     = tcga_rnaseq, 
+              "tcga_clinical"   = tcga_clinical))
 }

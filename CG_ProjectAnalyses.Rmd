@@ -9,6 +9,7 @@ output: pdf_document
 knitr::opts_chunk$set(echo = TRUE)
 # Clear console
 rm(list=ls())
+stringsAsFactors <- FALSE
 
 # Libraries
 library(tidyverse)
@@ -16,11 +17,15 @@ library(survival)
 library(circlize)
 library(DESeq2)
 library(keras)
+library(preprocessCore)
+library(R.utils)
 
 # Directories
 homedir <- "/Users/kevinoconnor/Documents/School/CancerGenomics/Project"
 codedir <- file.path(homedir, "UNC_CancerGenomics_Spring19_Group2")
 datadir <- file.path(homedir, "Data")
+dcmdir  <- "/Users/kevinoconnor/Documents/Research/DCM/Differential-Correlation-Mining/DCM/R"
+sourceDirectory(dcmdir, modifiedOnly = FALSE)
 
 # Read data.
 source(file.path(codedir, "DataLoader.R"))
@@ -32,57 +37,122 @@ tcga_clin     <- data_list$tcga_clinical
 ```
 
 ```{r check_qn}
-apply(tcga_rnaseq, 2, function(x) quantile(x, probs = 0.75))[1:20]
-apply(target_rnaseq, 2, function(x) quantile(x, probs = 0.75))[1:20]
+# Checking for upper quartile normalization.
+apply(tcga_rnaseq, 2, function(x) quantile(x, probs = 0.5))[1:20]
+apply(target_rnaseq, 2, function(x) quantile(x, probs = 0.5))[1:20]
+## Data is not quantile normalized, so we will normalize it ourselves.
+# Quantile normalization.
+tcga_rnaseq_unnorm <- tcga_rnaseq
+target_rnaseq_unnorm <- target_rnaseq
+tcga_rnaseq <- as.matrix(tcga_rnaseq) %>% normalize.quantiles() %>% as.data.frame()
+target_rnaseq <- as.matrix(target_rnaseq) %>% normalize.quantiles() %>% as.data.frame()
+rownames(tcga_rnaseq) <- rownames(tcga_rnaseq_unnorm)
+rownames(target_rnaseq) <- rownames(target_rnaseq_unnorm)
+colnames(tcga_rnaseq) <- colnames(tcga_rnaseq_unnorm) %>%
+  gsub(pattern="[.]", replacement="-") %>% 
+  substr(start=1, stop=12)
+colnames(target_rnaseq) <- colnames(target_rnaseq_unnorm) %>% 
+  gsub(pattern="[.]", replacement="-") %>% 
+  substr(start=1, stop=16)
+## Select primary samples in target.
+target_rnaseq <- target_rnaseq[, which(substr(colnames(target_rnaseq_unnorm), start=18, stop=20) == "09A")]
 ```
 
 ```{r attach_clin_dat}
-# Get short patient codes.
-short.samp.names <- sapply(colnames(rnaseq.dat), function(x){
-  substr(x, start=1, stop=16)
-})
-# Subset to patients with clinical data.
-## Note that some patients have multiple measurements. For now, we are treating
-##  them as separate samples since I am not sure of how to intelligently choose
-##  a single sample.
-rnaseq.sub <- rnaseq.dat[, na.omit(match(clin.dat[,1], factor(short.samp.names)))]
+# Match samples with clinical data.
+tcga_clin_inds <- match(colnames(tcga_rnaseq), rownames(tcga_clin))
+target_clin_inds <- match(colnames(target_rnaseq), rownames(target_clin))
 # Get survival times for each patient.
-rnaseq.sub.short.names <- short.samp.names[match(colnames(rnaseq.sub), names(short.samp.names))]
-survival.time <- clin.dat[match(rnaseq.sub.short.names, clin.dat[,1]), 9]
+tcga_survtime <- tcga_clin[tcga_clin_inds, 9]
+target_survtime <- target_clin[target_clin_inds, 8]
+# Genders
+tcga_gender <- tcga_clin$"gender"[tcga_clin_inds]
+target_gender <- target_clin$"Gender"[target_clin_inds]
+# Race
+tcga_race <- tcga_clin$"race_list"[tcga_clin_inds]
+target_race <- target_clin$"Race"[target_clin_inds]
 ```
 
-```{r neural_net_1}
-# Center and scale log-survival time.
-log.st <- log(survival.time)
-log.st.mean <- mean(log.st)
-log.st.sd <- sd(log.st)
-st.std <- (log.st - log.st.mean)/log.st.sd
+```{r filter_and_transform_rnaseq}
+# Filter genes with outliers.
+to_remove_tcga   <- which(rowSums(as.matrix(tcga_rnaseq) / rowMads(as.matrix(tcga_rnaseq)) > 10) > 0)
+to_remove_target <- which(rowSums(as.matrix(target_rnaseq) / rowMads(as.matrix(target_rnaseq)) > 10) > 0)
+not_outliers <- intersect(rownames(tcga_rnaseq)[-to_remove_tcga], rownames(target_rnaseq)[-to_remove_target])
+tcga_rnaseq_unfilt <- tcga_rnaseq
+target_rnaseq_unfilt <- target_rnaseq
+tcga_rnaseq <- tcga_rnaseq[not_outliers, ]
+target_rnaseq <- target_rnaseq[not_outliers, ]
+# Filter genes with mean expression too small.
+to_remove_tcga <- which(rowMeans(tcga_rnaseq) < 10e-3)
+to_remove_target <- which(rowMeans(target_rnaseq) < 10e-3)
+underexp <- union(rownames(tcga_rnaseq)[to_remove_tcga], rownames(target_rnaseq)[as.numeric(to_remove_target)])
+tcga_rnaseq <- tcga_rnaseq[-match(underexp, rownames(tcga_rnaseq)), ]
+target_rnaseq <- target_rnaseq[-match(underexp, rownames(target_rnaseq)), ]
 
-# Prepare train and test datasets.
-nn.df <- as.data.frame(vst(rnaseq.sub))
-train.inds <- sample(1:ncol(nn.df), round(0.8*ncol(nn.df)))
-nn.train <- nn.df[, train.inds]
-nn.test <- nn.df[, -train.inds]
-st.train <- st.std[train.inds]
-st.test <- st.std[-train.inds]
-
-# Build model.
-model <- keras_model_sequential() 
-model %>% 
-  layer_dense(units = 256, activation = "relu", input_shape = 4) %>% 
-  layer_dropout(rate = 0.4) %>% 
-  layer_dense(units = 128, activation = "relu") %>%
-  layer_dropout(rate = 0.3) %>%
-  layer_dense(units = 1, activation = "linear") %>% 
-  compile(
-  loss = "mean_squared_error",
-  optimizer = optimizer_rmsprop(),
-  metrics = c("accuracy")
-)
-
-history <- model %>% fit(
-  nn.train[c("VEGFA", "VEGFB", "VEGFC", "VEGFD"), ], st.train, 
-  epochs = 30, batch_size = 10, 
-  validation_split = 0.2
-)
+# Transform expression.
+tcga_rnaseq_untrans <- tcga_rnaseq
+target_rnaseq_untrans <- target_rnaseq
+# Log-2 transform.
+tcga_rnaseq <- log(tcga_rnaseq + 1, base=2)
+target_rnaseq <- log(target_rnaseq + 1, base=2)
 ```
+
+```{r dcm_gender}
+# Prepare data
+male_rnaseq <- cbind(tcga_rnaseq[, which(tcga_gender == "MALE")], target_rnaseq[, which(target_gender == "Male")])
+female_rnaseq <- cbind(tcga_rnaseq[, which(tcga_gender == "FEMALE")], target_rnaseq[, which(target_gender == "Female")])
+# Run DCM
+dcm_male_v_female <- DCM(male_rnaseq, female_rnaseq, max.groups=1)
+dcm_female_v_male <- DCM(female_rnaseq, male_rnaseq, max.groups=1)
+dcm_male_v_female_set <- rownames(female_rnaseq)[dcm_out$DC_sets[[1]]]
+dcm_female_v_male_set <- rownames(male_rnaseq)[dcm_out$DC_sets[[1]]]
+# GO analysis
+go_analysis(dcm_male_v_female, rownames(female_rnaseq))
+go_analysis(dcm_female_v_male_set, rownames(male_rnaseq))
+```
+
+```{r dcm_race}
+# Prepare data
+white_rnaseq <- cbind(tcga_rnaseq[, which(tcga_race == "WHITE")], target_rnaseq[, which(target_race == "White")])
+afram_rnaseq <- cbind(tcga_rnaseq[, which(tcga_race == "BLACK OR AFRICAN AMERICAN")], target_rnaseq[, which(target_race == "Black or African American")])
+# Run DCM
+dcm_white_v_afram <- DCM(white_rnaseq, afram_rnaseq, max.groups=1, echo=TRUE)
+dcm_afram_v_white <- DCM(afram_rnaseq, white_rnaseq, max.groups=1, echo=TRUE, QN=TRUE)
+dcm_afram_v_white_set <- rownames(white_rnaseq)[dcm_afram_v_white$DC_sets[[1]]]
+# GO analysis.
+go_analysis(dcm_afram_v_white_set, rownames(white_rnaseq))
+```
+
+```{r dcm_survtime}
+# Prepare data
+time_cutoff <- 1000
+short_rnaseq <- cbind(tcga_rnaseq[, which(tcga_survtime < time_cutoff)], target_rnaseq[, which(target_survtime < time_cutoff)])
+long_rnaseq <- cbind(tcga_rnaseq[, which(tcga_survtime >= time_cutoff)], target_rnaseq[, which(target_survtime >= time_cutoff)])
+# Run DCM
+dcm_long_v_short <- DCM(short_rnaseq, long_rnaseq, max.groups=1, echo=TRUE)
+dcm_short_v_long <- DCM(long_rnaseq, short_rnaseq, max.groups=1, echo=TRUE)
+dcm_long_v_short_set <- rownames(short_rnaseq)[dcm_long_v_short$DC_sets[[1]]]
+dcm_short_v_long_set <- rownames(short_rnaseq)[dcm_short_v_long$DC_sets[[1]]]
+# Go analysis
+go_analysis(dcm_long_v_short_set, rownames(short_rnaseq))
+go_analysis(dcm_short_v_long_set, rownames(short_rnaseq))
+```
+
+
+```{r stuff}
+fileConn <- file(file.path(homedir, "dcm_sets.txt"), open="wb")
+writeLines("Female vs. Male", fileConn)
+writeLines(sort(dcm_female_v_male_set), fileConn)
+writeLines("", fileConn)
+writeLines("Black or African American vs. White", fileConn)
+writeLines(sort(dcm_afram_v_white_set), fileConn)
+writeLines("", fileConn)
+writeLines("Long vs. Short Survival Time", fileConn)
+writeLines(sort(dcm_long_v_short_set), fileConn)
+writeLines("", fileConn)
+writeLines("Short vs. Long Survival Time", fileConn)
+writeLines(sort(dcm_short_v_long_set), fileConn)
+close(fileConn)
+```
+
+

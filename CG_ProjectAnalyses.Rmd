@@ -30,82 +30,56 @@ sourceDirectory(dcmdir, modifiedOnly = FALSE)
 # Read data.
 source(file.path(codedir, "DataLoader.R"))
 data_list <- DataLoader(datadir)
-target_rnaseq <- data_list$target_rnaseq
-target_clin   <- data_list$target_clinical
-tcga_rnaseq   <- data_list$tcga_rnaseq
-tcga_clin     <- data_list$tcga_clinical
+rnaseq <- data_list$rnaseq
+clinical   <- data_list$clinical
 ```
 
 ```{r check_qn}
 # Checking for upper quartile normalization.
 apply(tcga_rnaseq, 2, function(x) quantile(x, probs = 0.5))[1:20]
 apply(target_rnaseq, 2, function(x) quantile(x, probs = 0.5))[1:20]
-## Data is not quantile normalized, so we will normalize it ourselves.
-# Quantile normalization.
-tcga_rnaseq_unnorm <- tcga_rnaseq
-target_rnaseq_unnorm <- target_rnaseq
-tcga_rnaseq <- as.matrix(tcga_rnaseq) %>% normalize.quantiles() %>% as.data.frame()
-target_rnaseq <- as.matrix(target_rnaseq) %>% normalize.quantiles() %>% as.data.frame()
-rownames(tcga_rnaseq) <- rownames(tcga_rnaseq_unnorm)
-rownames(target_rnaseq) <- rownames(target_rnaseq_unnorm)
-colnames(tcga_rnaseq) <- colnames(tcga_rnaseq_unnorm) %>%
-  gsub(pattern="[.]", replacement="-") %>% 
-  substr(start=1, stop=12)
-colnames(target_rnaseq) <- colnames(target_rnaseq_unnorm) %>% 
-  gsub(pattern="[.]", replacement="-") %>% 
-  substr(start=1, stop=16)
-## Select primary samples in target.
-target_rnaseq <- target_rnaseq[, which(substr(colnames(target_rnaseq_unnorm), start=18, stop=20) == "09A")]
 ```
 
-```{r attach_clin_dat}
-# Match samples with clinical data.
-tcga_clin_inds <- match(colnames(tcga_rnaseq), rownames(tcga_clin))
-target_clin_inds <- match(colnames(target_rnaseq), rownames(target_clin))
-# Get survival times for each patient.
-tcga_survtime <- tcga_clin[tcga_clin_inds, 9]
-target_survtime <- target_clin[target_clin_inds, 8]
-# Genders
-tcga_gender <- tcga_clin$"gender"[tcga_clin_inds]
-target_gender <- target_clin$"Gender"[target_clin_inds]
-# Race
-tcga_race <- tcga_clin$"race_list"[tcga_clin_inds]
-target_race <- target_clin$"Race"[target_clin_inds]
+```{r data_summary}
+library(vioplot)
+# Age plot.
+png(file.path(homedir, "age_plot.png"))
+plot(density(clinical$age), main="Age in Days", xlab="Age in Days")
+dev.off()
+# Survival time plot.
+png(file.path(homedir, "survival_time_plot.png"))
+plot(density(na.omit(clinical$survtime)), main="Survival Time in Days", xlab="Survival Time in Days")
+dev.off()
+# Aneuploidy score
+png(file.path(homedir, "aneuploidy_plot.png"))
+plot(density(na.omit(clinical$Aneuploidy.Score)), main="Aneuploidy Score", xlab="Aneuploidy Score")
+dev.off()
+# Violin age plot.
+png(file.path(homedir, "age_violin_plot.png"))
+vioplot(clinical$age[which(substr(clinical$Row.names, start=1, stop=6) == "TARGET")],
+        clinical$age[-which(substr(clinical$Row.names, start=1, stop=6) == "TARGET")], 
+        main="Age in Days", names=c("TARGET", "TCGA"), col="lightblue", ylab="Age in Days")
+dev.off()
+# Histograms of VEGF
+png(file.path(homedir, "vegfa_plot.png"))
+hist(as.numeric(rnaseq["VEGFA", ]), xlim=c(-4, 4), main="VEGFA Expression", xlab="Expression")
+dev.off()
+png(file.path(homedir, "vegfb_plot.png"))
+hist(as.numeric(rnaseq["VEGFB", ]), xlim=c(-4, 4), main="VEGFB Expression", xlab="Expression")
+dev.off()
+png(file.path(homedir, "vegfc_plot.png"))
+hist(as.numeric(rnaseq["VEGFC", ]), xlim=c(-4, 4), main="VEGFC Expression", xlab="Expression")
+dev.off()
 ```
 
-```{r filter_and_transform_rnaseq}
-# Filter genes with outliers.
-to_remove_tcga   <- which(rowSums(as.matrix(tcga_rnaseq) / rowMads(as.matrix(tcga_rnaseq)) > 10) > 0)
-to_remove_target <- which(rowSums(as.matrix(target_rnaseq) / rowMads(as.matrix(target_rnaseq)) > 10) > 0)
-not_outliers <- intersect(rownames(tcga_rnaseq)[-to_remove_tcga], rownames(target_rnaseq)[-to_remove_target])
-tcga_rnaseq_unfilt <- tcga_rnaseq
-target_rnaseq_unfilt <- target_rnaseq
-tcga_rnaseq <- tcga_rnaseq[not_outliers, ]
-target_rnaseq <- target_rnaseq[not_outliers, ]
-# Filter genes with mean expression too small.
-to_remove_tcga <- which(rowMeans(tcga_rnaseq) < 10e-3)
-to_remove_target <- which(rowMeans(target_rnaseq) < 10e-3)
-underexp <- union(rownames(tcga_rnaseq)[to_remove_tcga], rownames(target_rnaseq)[as.numeric(to_remove_target)])
-tcga_rnaseq <- tcga_rnaseq[-match(underexp, rownames(tcga_rnaseq)), ]
-target_rnaseq <- target_rnaseq[-match(underexp, rownames(target_rnaseq)), ]
-
-# Transform expression.
-tcga_rnaseq_untrans <- tcga_rnaseq
-target_rnaseq_untrans <- target_rnaseq
-# Log-2 transform.
-tcga_rnaseq <- log(tcga_rnaseq + 1, base=2)
-target_rnaseq <- log(target_rnaseq + 1, base=2)
-```
 
 ```{r dcm_gender}
-# Prepare data
-male_rnaseq <- cbind(tcga_rnaseq[, which(tcga_gender == "MALE")], target_rnaseq[, which(target_gender == "Male")])
-female_rnaseq <- cbind(tcga_rnaseq[, which(tcga_gender == "FEMALE")], target_rnaseq[, which(target_gender == "Female")])
+gender <- clinical$gender[match(colnames(rnaseq), clinical$Row.names)] %>% as.vector()
 # Run DCM
-dcm_male_v_female <- DCM(male_rnaseq, female_rnaseq, max.groups=1)
-dcm_female_v_male <- DCM(female_rnaseq, male_rnaseq, max.groups=1)
-dcm_male_v_female_set <- rownames(female_rnaseq)[dcm_out$DC_sets[[1]]]
-dcm_female_v_male_set <- rownames(male_rnaseq)[dcm_out$DC_sets[[1]]]
+dcm_male_v_female <- DCM(rnaseq[, which(gender == "male")], rnaseq[, which(gender == "female")], max.groups=2, echo=TRUE)
+dcm_female_v_male <- DCM(rnaseq[, which(gender == "female")], rnaseq[, which(gender == "male")], max.groups=1, echo=TRUE)
+dcm_male_v_female_sets <- lapply(dcm_male_v_female$DC_sets, function(x) sort(rownames(rnaseq)[x]))
+dcm_female_v_male_sets <- lapply(dcm_female_v_male$DC_sets, function(x) sort(rownames(rnaseq)[x]))
 # GO analysis
 go_analysis(dcm_male_v_female, rownames(female_rnaseq))
 go_analysis(dcm_female_v_male_set, rownames(male_rnaseq))
@@ -113,46 +87,90 @@ go_analysis(dcm_female_v_male_set, rownames(male_rnaseq))
 
 ```{r dcm_race}
 # Prepare data
-white_rnaseq <- cbind(tcga_rnaseq[, which(tcga_race == "WHITE")], target_rnaseq[, which(target_race == "White")])
-afram_rnaseq <- cbind(tcga_rnaseq[, which(tcga_race == "BLACK OR AFRICAN AMERICAN")], target_rnaseq[, which(target_race == "Black or African American")])
+race <- clinical$race[match(colnames(rnaseq), clinical$Row.names)] %>% as.vector()
+white_inds <- which(race == "white")
+black_inds <- which(race == "black or african american")
 # Run DCM
-dcm_white_v_afram <- DCM(white_rnaseq, afram_rnaseq, max.groups=1, echo=TRUE)
-dcm_afram_v_white <- DCM(afram_rnaseq, white_rnaseq, max.groups=1, echo=TRUE, QN=TRUE)
-dcm_afram_v_white_set <- rownames(white_rnaseq)[dcm_afram_v_white$DC_sets[[1]]]
+#dcm_white_v_afram <- DCM(rnaseq[, white_inds], rnaseq[, black_inds], max.groups=1, echo=TRUE)
+#dcm_afram_v_white <- DCM(rnaseq[, black_inds], rnaseq[, white_inds], max.groups=1, echo=TRUE)
+#dcm_afram_v_white_set <- rownames(white_rnaseq)[dcm_afram_v_white$DC_sets[[1]]]
 # GO analysis.
-go_analysis(dcm_afram_v_white_set, rownames(white_rnaseq))
+#go_analysis(dcm_afram_v_white_set, rownames(white_rnaseq))
 ```
 
 ```{r dcm_survtime}
 # Prepare data
-time_cutoff <- 1000
-short_rnaseq <- cbind(tcga_rnaseq[, which(tcga_survtime < time_cutoff)], target_rnaseq[, which(target_survtime < time_cutoff)])
-long_rnaseq <- cbind(tcga_rnaseq[, which(tcga_survtime >= time_cutoff)], target_rnaseq[, which(target_survtime >= time_cutoff)])
+time_lower_cut <- 365
+time_upper_cut <- 5*365
+survtime <- clinical$survtime[match(colnames(rnaseq), clinical$Row.names)] %>% as.vector()
+short_inds <- which(survtime <= time_lower_cut)
+long_inds <- which(survtime > time_lower_cut & survtime <= time_upper_cut)
 # Run DCM
-dcm_long_v_short <- DCM(short_rnaseq, long_rnaseq, max.groups=1, echo=TRUE)
-dcm_short_v_long <- DCM(long_rnaseq, short_rnaseq, max.groups=1, echo=TRUE)
-dcm_long_v_short_set <- rownames(short_rnaseq)[dcm_long_v_short$DC_sets[[1]]]
-dcm_short_v_long_set <- rownames(short_rnaseq)[dcm_short_v_long$DC_sets[[1]]]
+#dcm_long_v_short <- DCM(rnaseq[, short_inds], rnaseq[, long_inds], max.groups=1, echo=TRUE)
+dcm_short_v_long <- DCM(rnaseq[, long_inds], rnaseq[, short_inds], max.groups=1, echo=TRUE)
+#dcm_long_v_short_set <- rownames(rnaseq)[dcm_long_v_short$DC_sets[[1]]]
+dcm_short_v_long_sets <- lapply(dcm_short_v_long$DC_sets, function(x) sort(rownames(rnaseq)[x]))
 # Go analysis
-go_analysis(dcm_long_v_short_set, rownames(short_rnaseq))
-go_analysis(dcm_short_v_long_set, rownames(short_rnaseq))
+#go_analysis(dcm_long_v_short_set, rownames(rnaseq))
+go_analysis(dcm_short_v_long_set[[1]], rownames(rnaseq))
 ```
+
+```{r dcm_aneuploidy}
+# Prepare data
+an_score <- clinical$Aneuploidy.Score[match(colnames(rnaseq), clinical$Row.names)] %>% as.vector()
+low_inds <- which(an_score == 0)
+high_inds <- which(an_score > 0)
+# Run DCM
+#dcm_lowas_v_highas <- DCM(rnaseq[, low_inds], rnaseq[, high_inds], max.groups=1, echo=TRUE)
+#dcm_highas_v_lowas <- DCM(rnaseq[, high_inds], rnaseq[, low_inds], max.groups=1, echo=TRUE)
+#dcm_short_v_long_sets <- lapply(dcm_short_v_long$DC_sets, function(x) sort(rownames(rnaseq)[x]))
+# Go analysis
+#go_analysis(dcm_long_v_short_set, rownames(rnaseq))
+#go_analysis(dcm_short_v_long_set[[1]], rownames(rnaseq))
+```
+
+
 
 
 ```{r stuff}
 fileConn <- file(file.path(homedir, "dcm_sets.txt"), open="wb")
+writeLines("Male vs. Female", fileConn)
+for(s in dcm_male_v_female_sets){
+  writeLines(sort(s), fileConn)
+  writeLines("", fileConn)  
+}
 writeLines("Female vs. Male", fileConn)
-writeLines(sort(dcm_female_v_male_set), fileConn)
-writeLines("", fileConn)
-writeLines("Black or African American vs. White", fileConn)
-writeLines(sort(dcm_afram_v_white_set), fileConn)
-writeLines("", fileConn)
-writeLines("Long vs. Short Survival Time", fileConn)
-writeLines(sort(dcm_long_v_short_set), fileConn)
-writeLines("", fileConn)
+for(s in dcm_female_v_male_sets){
+  writeLines(sort(s), fileConn)
+  writeLines("", fileConn)  
+}
 writeLines("Short vs. Long Survival Time", fileConn)
-writeLines(sort(dcm_short_v_long_set), fileConn)
+for(s in dcm_short_v_long_sets){
+  writeLines(sort(s), fileConn)
+  writeLines("", fileConn)
+}
 close(fileConn)
 ```
 
 
+
+```{r compare_to_vascular_signatures}
+vasc_sign <- read.csv(file.path(homedir, "vascular_signatures.csv"), header=TRUE)
+vasc_genes <- as.vector(vasc_sign$Gene.symbol)
+# Male vs Female
+print("Male vs Female")
+for(s in dcm_male_v_female_sets){
+  print(intersect(s, vasc_sign$Gene.symbol))
+}
+# Female vs Male
+print("Female vs Male")
+for(s in dcm_female_v_male_sets){
+  print(intersect(s, vasc_sign$Gene.symbol))
+}
+# Short vs long survival time
+print("Short vs Long Survival Time")
+for(s in dcm_short_v_long_sets){
+  print(intersect(s, vasc_sign$Gene.symbol))
+}
+
+```

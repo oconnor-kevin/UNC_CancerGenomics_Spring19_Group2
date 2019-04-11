@@ -81,8 +81,8 @@ DataLoader <- function(file_dir = getwd(),
   rnaseq <- rnaseq - matrixStats::rowMedians(as.matrix(rnaseq))
   
   # Gather clinical data.
-  tcga_clin_inds <- match(colnames(rnaseq)[which(sample_flag == "tcga")], rownames(tcga_clin))
-  target_clin_inds <- match(colnames(rnaseq)[which(sample_flag == "target")], rownames(target_clin))
+  tcga_clin_inds <- match(colnames(rnaseq)[which(sample_flag == "tcga")], rownames(tcga_clinical))
+  target_clin_inds <- match(colnames(rnaseq)[which(sample_flag == "target")], rownames(target_clinical))
   # Get survival times for each patient.
   tcga_survtime <- tcga_clinical[tcga_clin_inds, 10]
   target_survtime <- target_clinical[target_clin_inds, 8]

@@ -1,68 +1,52 @@
 # TITLE: DataLoader.R
 # AUTHOR: Kevin O'Connor
 # DATE CREATED: 3/7/19
-# DATE MODIFIED: 4/9/19
+# DATE MODIFIED: 4/14/19
 
 DataLoader <- function(file_dir = getwd(), 
                        normalize_quantiles = TRUE, 
-                       select_primary = TRUE,
                        filt = TRUE,
                        min_med = 5,
-                       min_sd = 1){
-  require(preprocessCore)
-  
+                       min_sd = 1.5){
   stringsAsFactors <- FALSE
   
   # Read all the data and set row and column names.
-  target_rnaseq <- read.csv(file.path(file_dir, "target_laml_rnaseq_040119.csv"), header = TRUE)
-  target_rnaseq <- target_rnaseq[-which(duplicated(target_rnaseq[, 1])), ]
-  rownames(target_rnaseq) <- target_rnaseq[, 1]
-  target_rnaseq <- target_rnaseq[, -1]
+  rnaseq <- read.csv(file.path(file_dir, "tcga_laml_rnaseq_040119.csv"), header = TRUE)
+  rownames(rnaseq) <- rnaseq[, 1]
+  rnaseq <- rnaseq[, -1]
   
-  target_clinical <- read.csv(file.path(file_dir, "target_laml_clinical_040119.csv"), header = TRUE)
-  rownames(target_clinical) <- target_clinical[, 1]
-  target_clinical <- target_clinical[, -1]
-  
-  tcga_rnaseq <- read.csv(file.path(file_dir, "tcga_laml_rnaseq_040119.csv"), header = TRUE)
-  rownames(tcga_rnaseq) <- tcga_rnaseq[, 1]
-  tcga_rnaseq <- tcga_rnaseq[, -1]
-  
-  tcga_clinical <- read.csv(file.path(file_dir, "tcga_laml_clinical_040119.csv"), header = TRUE)
-  rownames(tcga_clinical) <- tcga_clinical[, 1]
-  tcga_clinical <- tcga_clinical[, -1]
+  clinical <- read.csv(file.path(file_dir, "tcga_laml_clinical_040119.csv"), header = TRUE)
+  rownames(clinical) <- clinical[, 1]
+  clinical <- clinical[, -1]
   
   tcga_as <- read.csv(file.path(file_dir, "tcga_laml_aneuploidy_040119.csv"), header=TRUE)
   tcga_as_samples <- sapply(tcga_as[, 1], function(x) substr(x, start=1, stop=12))
     
-  # Merge rnaseq data.
-  rnaseq <- merge(tcga_rnaseq, target_rnaseq, by="row.names")
-  rownames(rnaseq) <- rnaseq$Row.names
-  rnaseq <- rnaseq[, -1]
-  sample_flag <- c(rep("tcga", ncol(tcga_rnaseq)), rep("target", ncol(target_rnaseq)))
-  
   # Quantile normalization.
+  ## Quartile normalization function courtesy of Joel Parker.
+  quartileNorm<- function(x, y = NA){
+    uqs <- apply(x, 2, function(x){
+      quantile(x[x>0 & !is.na(x)], 0.75)
+    })
+    if(is.na(y)){
+      y <- median(uqs)
+    }
+    x.norm <- t(apply(x, 1, function(x,y){x * y}, y / uqs))
+    dimnames(x.norm) <- dimnames(x)
+    return(x.norm)
+  }
   if(normalize_quantiles){
     rnaseq_unnorm <- rnaseq
-    rnaseq <- as.matrix(rnaseq) %>% normalize.quantiles() %>% as.data.frame()
+    rnaseq <- quartileNorm(rnaseq)
     rownames(rnaseq) <- rownames(rnaseq_unnorm)
-    tcga_colnames <- colnames(tcga_rnaseq) %>%
+    colnames(rnaseq) <- colnames(rnaseq_unnorm) %>%
       gsub(pattern="[.]", replacement="-") %>% 
       substr(start=1, stop=12)
-    target_colnames <- colnames(target_rnaseq) %>% 
-      gsub(pattern="[.]", replacement="-") %>% 
-      substr(start=1, stop=16)
-    colnames(rnaseq) <- c(tcga_colnames, target_colnames)
   }
 
-  # Select primary samples in target.
-  if(select_primary){
-    good_samples <- c(1:ncol(tcga_rnaseq), ncol(tcga_rnaseq) + which(substr(colnames(target_rnaseq), start=18, stop=20) == "09A"))
-    rnaseq <- rnaseq[, good_samples]  
-    sample_flag <- sample_flag[good_samples]
-  } else {
-    good_samples <- 1:ncol(rnaseq)
-  }
- 
+  # Log2 transform.
+  rnaseq <- log(rnaseq + 1, base = 2)
+   
   # Filter.
   rnaseq_unfilt <- rnaseq
   if(filt){
@@ -73,33 +57,21 @@ DataLoader <- function(file_dir = getwd(),
     good_genes <- 1:nrow(rnaseq)
   }
   
-  # Log2 transform.
-  rnaseq <- log(rnaseq + 1, base = 2)
-  
   # Standardize and median center.
   rnaseq <- rnaseq / genefilter::rowSds(rnaseq)
   rnaseq <- rnaseq - matrixStats::rowMedians(as.matrix(rnaseq))
   
   # Gather clinical data.
-  tcga_clin_inds <- match(colnames(rnaseq)[which(sample_flag == "tcga")], rownames(tcga_clinical))
-  target_clin_inds <- match(colnames(rnaseq)[which(sample_flag == "target")], rownames(target_clinical))
+  clin_inds <- match(colnames(rnaseq), rownames(clinical))
   # Get survival times for each patient.
-  tcga_survtime <- tcga_clinical[tcga_clin_inds, 10]
-  target_survtime <- target_clinical[target_clin_inds, 8]
-  survtime <- c(tcga_survtime, target_survtime)
+  survtime <- clinical[clin_inds, 10]
   # Genders
-  tcga_gender <- tcga_clinical$"gender"[tcga_clin_inds] %>% as.character() %>% sapply(tolower)
-  target_gender <- target_clinical$"Gender"[target_clin_inds] %>% as.character() %>% sapply(tolower)
-  gender <- c(tcga_gender, target_gender) %>% as.character()
+  gender <- clinical$"gender"[clin_inds] %>% as.character() %>% sapply(tolower)
   # Race
-  tcga_race <- tcga_clinical$"race_list"[tcga_clin_inds] %>% as.character() %>% sapply(tolower)
-  target_race <- target_clinical$"Race"[target_clin_inds] %>% as.character() %>% sapply(tolower)
-  race <- c(tcga_race, target_race) %>% as.character()
+  race <- clinical$"race_list"[clin_inds] %>% as.character() %>% sapply(tolower)
   race[which(race == "")] <- "unknown"
   # Age
-  tcga_age <- tcga_clinical$"days_to_birth"[tcga_clin_inds]
-  target_age <- target_clinical$"Age.at.Diagnosis.in.Days"[target_clin_inds]
-  age <- c(-1*tcga_age, target_age)
+  age <- -1*clinical$"days_to_birth"[clin_inds]
   # Aneuploidy
   tcga_as <- dplyr::select(tcga_as, Aneuploidy.Score)
   rownames(tcga_as) <- tcga_as_samples
